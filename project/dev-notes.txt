@@ -1,0 +1,25 @@
+handover notes — snip
+---------------------
+- api/Dockerfile is something I threw together months ago to "try
+  docker". it built once. never reviewed it, never ran it next to
+  postgres. I think I put the password in there to get it working,
+  please don't ship that
+- frontend has no Dockerfile. `npm run build` gives you a dist/ folder
+  of static files, that's all prod needs. node is only needed to BUILD
+  it, not to serve it
+- in dev, vite's proxy sends /api to localhost:8000. in prod there is no
+  vite. something has to put the frontend and /api on the same origin or
+  the browser calls will fail. we talked about nginx for this
+- the rate limiter keys on client IP. when we tried it behind a proxy
+  once, every user shared ONE limit because they all looked like the
+  proxy's IP. the API reads X-Real-IP if it's there
+- redis going down shouldn't take the site down — rate limiting just
+  switches off and stats come from postgres. someone should actually
+  test that instead of trusting me
+- /api/health vs /api/ready — they are different on purpose. pick the
+  right one for whatever is asking
+- we lost all links during the last demo when someone "cleaned up
+  docker". links must survive restarts/redeploys
+- postgres and redis should NOT be reachable from outside. only the
+  website should be
+- .env files never go in git. .env.example only
