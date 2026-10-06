@@ -1,3 +1,12 @@
+# URL Shortener: Docker Compose Project
+
+Final project of the Docker cohort. The FastAPI app was provided as part of the cohort. The Docker setup is my work: multi-stage builds, network separation, health checks, persistence, and troubleshooting.
+
+A four-service stack (nginx, FastAPI, PostgreSQL, Redis) started with a single `docker compose up`.
+
+---
+
+## Architecture
 
 ### Services
 
@@ -29,9 +38,7 @@ Browser
 - `api` → `db` and `api` → `cache`: over the `backend` network, using the names `db` and `cache`.
 - `frontend` cannot reach `db` or `cache`, because they share no network.
 
-### What every service does
-
-Let me explain it with realistic usecase:
+### How it works, explained with a restaurant
 
 1. **The manager opens the restaurant.** You type `docker compose up`. Docker Compose reads your file and builds every box (container) that the restaurant needs.
 2. **The pantry and the notepad open first.** Postgres (the pantry) and Redis (the notepad) start before anyone else. Compose waits until both say "I'm ready" (the healthcheck) before moving on.
@@ -60,8 +67,8 @@ Let me explain it with realistic usecase:
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/Joe-Khaled/docker-cohort-1.git
-cd docker-cohort-1/final-project/submission
+git clone https://github.com/Joe-Khaled/url-shortener-docker.git
+cd url-shortener-docker
 ```
 
 ### 2. Create the `.env` file
@@ -86,7 +93,7 @@ The first build takes a few minutes. Compose starts the services in this order: 
 docker compose ps
 ```
 
-db, cache and api should show healthy. frontend shows Up (it has no healthcheck, see Health checks). The API can take about 10-20 seconds to get healthy.
+`db`, `cache` and `api` should show `healthy`. `frontend` shows `Up` (it has no healthcheck, see [Health checks](#health-checks)). The API can take about 10-20 seconds to get healthy.
 
 ### 5. Open the app
 
@@ -198,22 +205,22 @@ A service is marked `unhealthy` only after all retries fail in a row.
 
 1. Started the stack:
 
-   ```bash
+```bash
    docker compose up
-   ```
+```
 
 2. Opened `http://localhost:3000`, shortened a URL, and saw the new link in the links list.
 3. Stopped and removed the containers (without `-v`):
 
-   ```bash
+```bash
    docker compose down
-   ```
+```
 
 4. Started the stack again:
 
-   ```bash
+```bash
    docker compose up
-   ```
+```
 
 5. Opened `http://localhost:3000` again.
 
@@ -225,7 +232,8 @@ The link I created before `docker compose down` was still in the links list afte
 
 `docker compose down` removes the containers and networks, but it keeps named volumes. The `db` container is recreated from scratch, but `pgdata` is mounted again at `/var/lib/postgresql/data`, so Postgres finds its old data and continues from it.
 
-Screenshots: see Evidence → Persistence.
+Screenshots: see [Evidence](#evidence).
+
 ---
 
 ## Operations / troubleshooting
@@ -236,41 +244,41 @@ Always in this order, from the big picture to the details:
 
 1. **See the state of all services**
 
-   ```bash
+```bash
    docker compose ps -a
-   ```
+```
 
    Look for `unhealthy`, `Exit`, or `Restarting`. This tells me which service is the problem.
 
 2. **Read its logs**
 
-   ```bash
+```bash
    docker compose logs --tail=50 <service>
-   ```
+```
 
    The error message is usually here. Use `-f` to follow live.
 
 3. **Check the healthcheck result**
 
-   ```bash
+```bash
    docker inspect --format '{{json .State.Health}}' $(docker compose ps -q <service>)
-   ```
+```
 
    This shows the exact command that failed and its output.
 
 4. **Go inside the container**
 
-   ```bash
+```bash
    docker compose exec <service> sh
-   ```
+```
 
    Test things by hand, for example call the API from inside, or check the files.
 
 5. **Check the final config**
 
-   ```bash
+```bash
    docker compose config
-   ```
+```
 
    Shows the merged file after `.env` substitution, so wrong values or indentation show up.
 
@@ -278,7 +286,11 @@ Always in this order, from the big picture to the details:
 
 ### Problem 1: Postgres crashed in a loop
 
-**Symptoms:** `docker compose up` failed with `dependency failed to start: container submission-db-1 is unhealthy`. The api and frontend never started.
+**Symptoms:** `docker compose up` failed with the error below, and the api and frontend never started:
+
+```text
+dependency failed to start: container <project>-db-1 is unhealthy
+```
 
 **Evidence:** The `db` logs repeated the same error many times:
 
@@ -305,35 +317,3 @@ volumes:
 **Verification:** `docker compose ps` showed `db` as `healthy`, and the api and frontend started after it. I then ran the persistence test (create a link, `down`, `up`, link still there).
 
 ---
-
-## Evidence
-
-### `docker compose up --build` completing
-
-![compose up --build](evidence/01-compose-up-build.png)
-
-### `docker compose ps`: all services running, only nginx published
-
-![compose ps](evidence/02-compose-ps.png)
-
-### `docker compose logs`
-
-api-1       | INFO:     127.0.0.1:42144 - "GET /api/ready HTTP/1.1" 200 OK
-[04/Oct/2026:17:23:35 +0000] "GET /api/ready HTTP/1.1" 200 58 "http://localhost:3000/"
-cache-1     | 1:M 04 Oct 2026 17:21:06.584 * Ready to accept connections tcp
-db-1     | 2026-10-04 17:33:23.703 UTC [1] LOG:  database system is ready to accept connections
-
-
-### App working in the browser
-
-![Link created](evidence/03-link-created.png)
-![Click count increased](evidence/04-click-count.png)
-
-### Persistence: before and after `down` → `up`
-
-![Before down](evidence/05-before-down.png)
-![After up](evidence/06-after-up.png)
-
-### `docker compose down`
-
-![compose down](evidence/07-compose-down.png)
