@@ -12,7 +12,7 @@ A four-service stack (nginx, FastAPI, PostgreSQL, Redis) started with a single `
 
 | Service | Image | What it does | Networks | Published port |
 |---|---|---|---|---|
-| `frontend` | nginx-unprivileged (built from `frontend/`) | Serves the web page and forwards `/api/` requests to the API | `frontend` | `3000` → `8080` |
+| `frontend` | nginx-unprivileged:1.28-alpine (built from `frontend/`) | Serves the web page and forwards `/api/` requests to the API | `frontend` | `3000` → `8080` |
 | `api` | python:3.11-slim (built from `api/`) | FastAPI app: creates links, redirects, counts clicks | `frontend`, `backend` | none |
 | `db` | postgres:16-alpine | Stores the links permanently (volume `pgdata`) | `backend` | none |
 | `cache` | redis:7-alpine | Temporary data, such as rate-limit counters | `backend` | none |
@@ -37,6 +37,7 @@ Browser
 - `frontend` → `api`: over the `frontend` network, using the name `api`.
 - `api` → `db` and `api` → `cache`: over the `backend` network, using the names `db` and `cache`.
 - `frontend` cannot reach `db` or `cache`, because they share no network.
+- `db` and `cache` cannot reach the internet, because `backend` is an `internal` network. The `api` still has outbound access through the `frontend` network.
 
 ### How it works, explained with a restaurant
 
@@ -156,21 +157,49 @@ Compose uses the file in two ways:
 
 ### 1. Multi-stage builds
 
-**Decision:** Both images use two stages. The frontend builds with `node:20-alpine` and serves with `nginxinc/nginx-unprivileged`. The API installs its dependencies in a builder stage and copies only the installed packages into the final image.
+**Decision:** Both images use two stages. The frontend builds with `node:20-alpine` and serves with `nginxinc/nginx-unprivileged:1.28-alpine`. The API installs its dependencies in a builder stage and copies only the installed packages into the final image.
 
 **Why:** After `npm run build`, the frontend is only static files, so Node, `node_modules`, and the source code are not needed at runtime. Leaving them behind makes the image much smaller and gives an attacker fewer tools to work with. The dependency files are copied before the source code, so changing code does not reinstall every package, which keeps rebuilds fast.
 
 ### 2. Network separation and a single published port
 
-**Decision:** There are two networks. `db` and `cache` are only on `backend`. `frontend` is only on the `frontend` network. The `api` joins both. Only the frontend publishes a port (`3000:8080`).
+**Decision:** There are two networks. `db` and `cache` are only on `backend`. `frontend` is only on the `frontend` network. The `api` joins both. Only the frontend publishes a port (`3000:8080`). The `backend` network is marked `internal: true`.
 
-**Why:** The goal is least exposure. The browser can only reach nginx, never Postgres, Redis, or the API directly. nginx cannot reach the database either, so an attacker who breaks into the web layer still has to go through the API to get to the data.
+**Why:** The goal is least exposure. The browser can only reach nginx, never Postgres, Redis, or the API directly. nginx cannot reach the database either, so an attacker who breaks into the web layer still has to go through the API to get to the data. Postgres and Redis never need the internet, so `internal: true` removes their outbound access. If one of them were compromised, it could not download tools or send data out.
 
 ### 3. Postgres has a named volume, Redis does not
 
 **Decision:** The `pgdata` volume is mounted at `/var/lib/postgresql/data` for Postgres. Redis has no volume.
 
 **Why:** The short links are permanent data and must survive restarts and container recreation. Redis only holds temporary data, such as rate-limit counters, so losing it on restart is harmless and keeps Redis simple.
+
+### 4. Resource limits for every service
+
+**Decision:** Every service has a CPU and memory limit under `deploy.resources.limits`:
+
+| Service | CPU limit | Memory limit |
+|---|---|---|
+| `frontend` | 0.5 | 128M |
+| `api` | 1.0 | 256M |
+| `db` | 1.0 | 512M |
+| `cache` | 1.0 | 512M |
+
+In total, the stack can use at most 3.5 CPUs and about 1.4 GB of memory.
+
+**Why:** Without limits, one container can use all the CPU and memory of the host. A traffic spike, a memory leak in the API, or a heavy query could slow down or crash everything else on the machine. With limits, each service gets a fixed budget:
+
+- **CPU:** a container that hits its limit is slowed down (throttled), not stopped.
+- **Memory:** a container that goes over its limit is killed by the kernel (OOM kill, exit code `137`). `restart: unless-stopped` then starts it again.
+
+The numbers follow what each service does. nginx only serves static files, so it needs very little. The API is a single Python process. Postgres gets the most memory because it caches data in RAM. Redis only holds small rate-limit counters, so 512M is plenty of room.
+
+> Compose v2 applies `deploy.resources.limits` with a normal `docker compose up`, not only in Swarm. You can check the limits that are active with `docker stats`.
+
+### 5. Pinned image versions
+
+**Decision:** Every base image has a version tag instead of `latest`: `node:20-alpine`, `nginxinc/nginx-unprivileged:1.28-alpine`, `python:3.11-slim`, `postgres:16-alpine`, and `redis:7-alpine`.
+
+**Why:** `latest` can point to a new major version at any time, so the same `docker compose up --build` could give a different result tomorrow. With a pinned version, builds are repeatable, and upgrades happen only when I change the tag myself.
 
 ---
 
@@ -266,7 +295,16 @@ Always in this order, from the big picture to the details:
 
    This shows the exact command that failed and its output.
 
-4. **Go inside the container**
+4. **Check if it hit its resource limits**
+
+   ```bash
+   docker stats --no-stream
+   docker inspect --format '{{.State.OOMKilled}} {{.State.ExitCode}}' $(docker compose ps -q <service>)
+   ```
+
+   `docker stats` shows CPU and memory usage next to each limit. `true 137` means the kernel killed the container because it went over its memory limit, so raise the limit in `compose.yml` or find what is using the memory.
+
+5. **Go inside the container**
 
 ```bash
    docker compose exec <service> sh
@@ -274,7 +312,7 @@ Always in this order, from the big picture to the details:
 
    Test things by hand, for example call the API from inside, or check the files.
 
-5. **Check the final config**
+6. **Check the final config**
 
 ```bash
    docker compose config
